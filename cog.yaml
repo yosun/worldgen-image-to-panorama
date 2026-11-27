@@ -1,0 +1,18 @@
+build:
+  gpu: true
+  cuda: "12.8"
+  python_version: "3.11"
+  sdk_version: "0.23.1"
+  system_packages:
+    - git
+    - libgl1
+    - libglib2.0-0
+  python_requirements: requirements.txt
+  run:
+    - pip install --no-deps "coglet==0.23.1"
+    - python -c "import cog.predictor; assert hasattr(cog.predictor, 'BaseRunner')"
+    - pip install --no-deps "git+https://github.com/EnVision-Research/DA-2.git@d659838585f2bc9967c7e9367af573795271dbbb#subdirectory=src"
+    # WorldGen imports only pytorch3d.transforms for this pipeline.
+    - PYTORCH3D_NO_EXTENSION=1 pip install --no-build-isolation "git+https://github.com/facebookresearch/pytorch3d.git@3d749749fd2e234a584009d5cf6d5c5a20c4703b"
+    - pip install --no-deps "https://github.com/ZiYang-xie/WorldGen/archive/7ce7b2767fdf31e2727b69a2e61e2e950e3a017f.zip"
+predict: "predict.py:Predictor"
