@@ -3,28 +3,29 @@
 import json
 import tempfile
 import time
-from functools import partial
 
 import torch
 from cog import BasePredictor, Input, Path, Secret
 from huggingface_hub import hf_hub_download, snapshot_download
 from PIL import Image, ImageOps
 
-from da2.model.spherevit import SphereViT
 from nunchaku import NunchakuFluxTransformer2dModel
 from worldgen import WorldGen
 import worldgen.worldgen as worldgen_module
 from worldgen.models.flux_pano_fill_pipeline import FluxFillPipeline
-from worldgen.pano_depth import DA2_CONFIG
 from worldgen.utils.lora_utils import load_and_fix_lora
+
+from projection import perspective_predictions
+from projection_mapper import map_perspective_image
 
 
 class Predictor(BasePredictor):
     def setup(self):
         if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
             raise RuntimeError("WorldGen requires a CUDA GPU with bfloat16 support")
-        # Bound the nearest-neighbor matrix used to map an image onto the panorama.
-        worldgen_module.map_image_to_pano = partial(worldgen_module.map_image_to_pano, nn_batch=256)
+        # WorldGen's panorama mapping only uses input RGB and camera rays.
+        worldgen_module.pred_depth = perspective_predictions
+        worldgen_module.map_image_to_pano = map_perspective_image
         self.worldgen = None
 
     def _load_model(self, token):
@@ -44,11 +45,6 @@ class Predictor(BasePredictor):
             revision="e331143be73c40573ae227a4fac14105a3dfd6c7",
             allow_patterns=["config.json", "*.safetensors"],
         )
-        depth_path = snapshot_download(
-            repo_id="haodongli/DA-2",
-            revision="0d55ccb5e46b8ed4715fae3a4c04fc897f1689f3",
-            allow_patterns=["model.safetensors"],
-        )
         lora_path = hf_hub_download(
             repo_id="LeoXie/WorldGen",
             revision="2e2b2cb4dc3144a65481f0ca26b892584436868c",
@@ -61,9 +57,7 @@ class Predictor(BasePredictor):
         worldgen.device = torch.device("cuda")
         worldgen.mode = "i2s"
         worldgen.resolution = 1600
-        worldgen.depth_model = SphereViT.from_pretrained(depth_path, config=DA2_CONFIG)
-        worldgen.depth_model.eval()
-        worldgen.depth_model = worldgen.depth_model.to(worldgen.device)
+        worldgen.depth_model = None
 
         transformer = NunchakuFluxTransformer2dModel.from_pretrained(quantized_path, offload=True)
         worldgen.pano_gen_model = FluxFillPipeline.from_pretrained(
