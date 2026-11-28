@@ -6,26 +6,21 @@ import time
 
 import torch
 from cog import BasePredictor, Input, Path, Secret
-from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub import get_hf_file_metadata, hf_hub_download, hf_hub_url, snapshot_download
 from PIL import Image, ImageOps
 
 from nunchaku import NunchakuFluxTransformer2dModel
 from worldgen import WorldGen
-import worldgen.worldgen as worldgen_module
 from worldgen.models.flux_pano_fill_pipeline import FluxFillPipeline
 from worldgen.utils.lora_utils import load_and_fix_lora
 
-from projection import perspective_predictions
-from projection_mapper import map_perspective_image
+from seamless import generate_seamless_pano
 
 
 class Predictor(BasePredictor):
     def setup(self):
         if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
             raise RuntimeError("WorldGen requires a CUDA GPU with bfloat16 support")
-        # WorldGen's panorama mapping only uses input RGB and camera rays.
-        worldgen_module.pred_depth = perspective_predictions
-        worldgen_module.map_image_to_pano = map_perspective_image
         self.worldgen = None
 
     def _load_model(self, token):
@@ -76,15 +71,23 @@ class Predictor(BasePredictor):
         hf_token: Secret = Input(description="Hugging Face token with access to FLUX.1-Fill-dev"),
         prompt: str = Input(description="Optional scene description", default=""),
     ) -> Path:
+        token = hf_token.get_secret_value()
+        # Workers may be reused by different callers. Check every caller's access
+        # even if a previous caller already loaded the gated model into memory.
+        gated_url = hf_hub_url(
+            "black-forest-labs/FLUX.1-Fill-dev", "model_index.json",
+            revision="7326a96224b2513681b5d97281c83af967926bb6",
+        )
+        get_hf_file_metadata(gated_url, token=token)
         if self.worldgen is None:
-            self._load_model(hf_token.get_secret_value())
+            self._load_model(token)
 
         with Image.open(str(image)) as source:
             source_image = ImageOps.exif_transpose(source).convert("RGB")
         started = time.monotonic()
         torch.cuda.reset_peak_memory_stats()
         with torch.inference_mode():
-            panorama = self.worldgen.generate_pano(prompt=prompt, image=source_image)
+            panorama = generate_seamless_pano(self.worldgen, prompt, source_image)
         output = Path(tempfile.mkdtemp()) / "panorama.png"
         panorama.save(str(output), format="PNG")
         torch.cuda.synchronize()
